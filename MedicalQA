@@ -1,0 +1,87 @@
+# Step 1: Data Preparation – Extract and clean Wikipedia text.
+
+from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import DirectoryLoader
+
+print("Loading documents from the directory...")
+loader1 = DirectoryLoader('Data/MedicalQA/', glob='**/*.txt', show_progress=True, loader_cls=TextLoader)
+KB_documents1 = loader1.load()
+print(f"Total documents loaded: {len(KB_documents1)}")
+
+# Step 2: Chunking – Split into smaller segments with overlap.
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+print("Splitting documents into chunks...")
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+KB_Chunks1 = text_splitter.split_documents(KB_documents1)
+print(f"Total chunks created: {len(KB_Chunks1)}")
+
+# Step 3: Embedding Creation – Convert chunks into vectors.
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint
+print("Generating embeddings for the chunks...")
+embedding_model1 = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+KB_Embeddings1 = embedding_model1.embed_documents([chunk.page_content for chunk in KB_Chunks1])
+print(f"Embeddings generated for {len(KB_Embeddings1)} chunks.")
+
+# Step 4:  Store in Vector DB – Save embeddings with metadata.
+from langchain_chroma import Chroma
+
+print("Creating vector store and adding embeddings...")
+db1 = Chroma(collection_name="RAG_KB2", 
+            embedding_function=embedding_model1, 
+            persist_directory="./chroma_db")
+db1.add_documents(KB_Chunks1)
+print("Vector store created and embeddings added.")
+print(len(db1.get()["ids"]))
+
+retriever1 = db1.as_retriever(search_type="similarity", search_kwargs={"k": 2}) # Retriever Object
+
+
+# Step 5: User Query Processing – Convert question to embedding.
+from langchain_core.prompts import ChatPromptTemplate
+prompt_template1 = """Answer the {question} based on the {context}.
+Provide a detailed answer. Don’t justify your answers.
+Don’t give information not mentioned in the CONTEXT INFORMATION.
+Do not say "according to the context" or "mentioned in the context" or similar."""
+
+prompt_template1 = ChatPromptTemplate(messages=[prompt_template1])
+print(f"Prompt template created {prompt_template1}.")
+
+from langchain_huggingface import HuggingFacePipeline
+from transformers import pipeline
+
+# Option 1: HuggingFace Endpoint API (requires token with Inference API permission)
+# from langchain_huggingface import HuggingFaceEndpoint
+# HF_key = open("Data\\Keys\\huggingface.txt").read().strip()
+# GenModel1 = HuggingFaceEndpoint(
+#     repo_id="meta-llama/Llama-3.1-8B-Instruct",
+#     huggingfacehub_api_token=HF_key,
+#     task="text-generation",
+#     provider="hf-inference"
+# )
+
+# Option 2: Local GPT2 mode
+pipe1 = pipeline("text-generation", model="distilgpt2", max_new_tokens=200)
+GenModel1 = HuggingFacePipeline(pipeline=pipe1)
+
+from langchain_core.output_parsers import StrOutputParser
+parser1 = StrOutputParser()
+gen_chain1 = prompt_template1 | GenModel1 | parser1
+print("Answer generation chain created.")
+
+# Step 6: Similarity Search – Retrieve top relevant chunks.
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+from langchain_core.runnables import RunnablePassthrough
+
+rag_chain = {
+    "context": retriever1 | format_docs, 
+    "question": RunnablePassthrough()
+} | gen_chain1
+
+# Step 7: Answer Generation – Produce answer from retrieved chunks.
+Query1 = "What are the symptoms of alzheimer's disease?"
+response1 =rag_chain.invoke(Query1)
+
+print(f"Question: {Query1}\nAnswer: {response1}")
