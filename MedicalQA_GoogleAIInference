@@ -1,0 +1,75 @@
+# Step 1: Load medical knowledge base documents from text files
+from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import DirectoryLoader
+
+print("Loading documents from the directory...")
+loader1 = DirectoryLoader('Data/MedicalQA/', glob='**/*.txt', show_progress=True, loader_cls=TextLoader)
+KB_documents1 = loader1.load()
+print(f"Total documents loaded: {len(KB_documents1)}")
+
+# Step 2: Split documents into overlapping chunks for embedding
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+print("Splitting documents into chunks...")
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+KB_Chunks1 = text_splitter.split_documents(KB_documents1)
+print(f"Total chunks created: {len(KB_Chunks1)}")
+
+# Step 3: Generate vector embeddings for each chunk using HuggingFace
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint
+print("Generating embeddings for the chunks...")
+embedding_model1 = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+# Step 4: Store embeddings and metadata in a persistent Chroma vector database
+from langchain_chroma import Chroma
+
+print("Creating vector store and adding embeddings...")
+db1 = Chroma(collection_name="RAG_KB2", 
+            embedding_function=embedding_model1, 
+            persist_directory="./chroma_db")
+db1.add_documents(KB_Chunks1)
+print("Vector store created and embeddings added.")
+print(len(db1.get()["ids"]))
+
+# Step 5: Create a retriever for similarity search over the vector database
+retriever1 = db1.as_retriever(search_type="similarity", search_kwargs={"k": 2}) # Retriever Object
+
+# Step 6: Define prompt template for LLM answer generation
+from langchain_core.prompts import ChatPromptTemplate
+prompt_template1 = """Answer the {question} based on the {context}.
+Provide answer in 3-5 lines. Don’t justify your answers.
+Don’t give information not mentioned in the CONTEXT INFORMATION.
+Do not say "according to the context" or "mentioned in the context" or similar."""
+
+prompt_template1 = ChatPromptTemplate(messages=[prompt_template1])
+print(f"Prompt template created {prompt_template1}.")
+
+# Step 7: Set up Google Gemini model for inference using API key
+from langchain_google_genai import ChatGoogleGenerativeAI
+Google_key = open("Data\\Keys\\google.txt").read().strip()
+GenModel1 = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", 
+                                   temperature=0.7, 
+                                   max_tokens=2048, 
+                                   google_api_key=Google_key)
+
+# Step 8: Build answer generation chain (prompt → model → output parser)
+from langchain_core.output_parsers import StrOutputParser
+parser1 = StrOutputParser()
+gen_chain1 = prompt_template1 | GenModel1 | parser1
+print("Answer generation chain created.")
+
+# Step 9: Retrieve relevant chunks and generate answer using RAG chain
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+from langchain_core.runnables import RunnablePassthrough
+
+rag_chain = {
+    "context": retriever1 | format_docs, 
+    "question": RunnablePassthrough()
+} | gen_chain1
+
+# Step 10: Accept user query, run RAG chain, and print answer
+Query1 = input("Enter your query: ")
+response1 = rag_chain.invoke(Query1)
+
+print(f"Question: {Query1}\nAnswer: {response1}")
